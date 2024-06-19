@@ -6,13 +6,16 @@ import sys
 import uuid
 import argparse
 import datetime
+import subprocess
 import re
 from pathlib import Path
+import shutil
 
 g_indent_unit = "\t"
 g_version = ""
 g_build_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
+# Replace the following links with your own in the custom arp properties.
 # https://learn.microsoft.com/en-us/windows/win32/msi/property-reference
 g_arpsystemcomponent = {
     "Comments": {
@@ -38,20 +41,19 @@ g_arpsystemcomponent = {
 def make_parser():
     parser = argparse.ArgumentParser(description="Msi preprocess script.")
     parser.add_argument(
-        "-d", "--debug", action="store_true", help="Is debug", default=False
+        "-d",
+        "--dist-dir",
+        type=str,
+        default="../../rustdesk",
+        help="The dist direcotry to install.",
     )
     parser.add_argument(
-        "-ci", "--github-ci", action="store_true", help="Is github ci", default=False
-    )
-    parser.add_argument(
-        "-arp",
         "--arp",
         action="store_true",
         help="Is ARPSYSTEMCOMPONENT",
         default=False,
     )
     parser.add_argument(
-        "-custom-arp",
         "--custom-arp",
         type=str,
         default="{}",
@@ -61,7 +63,7 @@ def make_parser():
         "-c", "--custom", action="store_true", help="Is custom client", default=False
     )
     parser.add_argument(
-        "-an", "--app-name", type=str, default="RustDesk", help="The app name."
+        "--app-name", type=str, default="RustDesk", help="The app name."
     )
     parser.add_argument(
         "-v", "--version", type=str, default="", help="The app version."
@@ -70,7 +72,7 @@ def make_parser():
         "-m",
         "--manufacturer",
         type=str,
-        default="RustDesk",
+        default="PURSLANE",
         help="The app manufacturer.",
     )
     return parser
@@ -96,19 +98,14 @@ def read_lines_and_start_index(file_path, tag_start, tag_end):
     return lines, index_start
 
 
-def insert_components_between_tags(lines, index_start, app_name, build_dir):
+def insert_components_between_tags(lines, index_start, app_name, dist_dir):
     indent = g_indent_unit * 3
-    path = Path(build_dir)
+    path = Path(dist_dir)
     idx = 1
     for file_path in path.glob("**/*"):
         if file_path.is_file():
             if file_path.name.lower() == f"{app_name}.exe".lower():
                 continue
-
-            relative_file_path = file_path.relative_to(path)
-            guid = uuid.uuid5(
-                uuid.NAMESPACE_OID, app_name + "/" + str(relative_file_path)
-            )
 
             subdir = str(file_path.parent.relative_to(path))
             dir_attr = ""
@@ -119,7 +116,7 @@ def insert_components_between_tags(lines, index_start, app_name, build_dir):
             # because it will cause error
             # "Error WIX0130	The primary key 'xxxx' is duplicated in table 'Directory'"
             to_insert_lines = f"""
-{indent}<Component Guid="{guid}" {dir_attr}>
+{indent}<Component Guid="{uuid.uuid4()}" {dir_attr}>
 {indent}{g_indent_unit}<File Source="{file_path.as_posix()}" KeyPath="yes" Checksum="yes" />
 {indent}</Component>
 """
@@ -129,18 +126,18 @@ def insert_components_between_tags(lines, index_start, app_name, build_dir):
     return True
 
 
-def gen_auto_component(app_name, build_dir):
+def gen_auto_component(app_name, dist_dir):
     return gen_content_between_tags(
         "Package/Components/RustDesk.wxs",
         "<!--$AutoComonentStart$-->",
         "<!--$AutoComponentEnd$-->",
         lambda lines, index_start: insert_components_between_tags(
-            lines, index_start, app_name, build_dir
+            lines, index_start, app_name, dist_dir
         ),
     )
 
 
-def gen_pre_vars(args, build_dir):
+def gen_pre_vars(args, dist_dir):
     def func(lines, index_start):
         upgrade_code = uuid.uuid5(uuid.NAMESPACE_OID, app_name + ".exe")
 
@@ -152,8 +149,8 @@ def gen_pre_vars(args, build_dir):
             f'{indent}<?define Description="{args.app_name} Installer" ?>\n',
             f'{indent}<?define ProductLower="{args.app_name.lower()}" ?>\n',
             f'{indent}<?define RegKeyRoot=".$(var.ProductLower)" ?>\n',
-            f'{indent}<?define RegKeyInstall="$(var.RegKeyRoot)\Install" ?>\n',
-            f'{indent}<?define BuildDir="{build_dir}" ?>\n',
+            f'{indent}<?define RegKeyInstall="$(var.RegKeyRoot)\\Install" ?>\n',
+            f'{indent}<?define BuildDir="{dist_dir}" ?>\n',
             f'{indent}<?define BuildDate="{g_build_date}" ?>\n',
             "\n",
             f"{indent}<!-- The UpgradeCode must be consistent for each product. ! -->\n"
@@ -169,9 +166,9 @@ def gen_pre_vars(args, build_dir):
     )
 
 
-def replace_app_name_in_lans(app_name):
+def replace_app_name_in_langs(app_name):
     langs_dir = Path(sys.argv[0]).parent.joinpath("Package/Language")
-    for file_path in langs_dir.glob("*.wxs"):
+    for file_path in langs_dir.glob("*.wxl"):
         with open(file_path, "r") as f:
             lines = f.readlines()
         for i, line in enumerate(lines):
@@ -184,7 +181,8 @@ def gen_upgrade_info():
     def func(lines, index_start):
         indent = g_indent_unit * 3
 
-        major, _, _ = g_version.split(".")
+        vs = g_version.split(".")
+        major = vs[0]
         upgrade_id = uuid.uuid4()
         to_insert_lines = [
             f'{indent}<Upgrade Id="{upgrade_id}">\n',
@@ -253,7 +251,9 @@ def gen_custom_ARPSYSTEMCOMPONENT_False(args):
         )
         for _, v in g_arpsystemcomponent.items():
             if "msi" in v and "v" in v:
-                lines_new.append(f'{indent}<Property Id="{v["msi"]}" Value="{v["v"]}" />\n')
+                lines_new.append(
+                    f'{indent}<Property Id="{v["msi"]}" Value="{v["v"]}" />\n'
+                )
 
         for i, line in enumerate(lines_new):
             lines.insert(index_start + i + 1, line)
@@ -278,7 +278,7 @@ def get_folder_size(folder_path):
     return total_size
 
 
-def gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir):
+def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
     def func(lines, index_start):
         indent = g_indent_unit * 5
 
@@ -312,7 +312,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir):
             f'{indent}<RegistryValue Type="integer" Name="Language" Value="[ProductLanguage]" />\n'
         )
 
-        estimated_size = get_folder_size(build_dir)
+        estimated_size = get_folder_size(dist_dir)
         lines_new.append(
             f'{indent}<RegistryValue Type="integer" Name="EstimatedSize" Value="{estimated_size}" />\n'
         )
@@ -320,12 +320,18 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir):
         lines_new.append(
             f'{indent}<RegistryValue Type="expandable" Name="ModifyPath" Value="MsiExec.exe /X [ProductCode]" />\n'
         )
-        lines_new.append(f'{indent}<RegistryValue Type="integer" Id="NoModify" Value="1" />\n')
+        lines_new.append(
+            f'{indent}<RegistryValue Type="integer" Id="NoModify" Value="1" />\n'
+        )
         lines_new.append(
             f'{indent}<RegistryValue Type="expandable" Name="UninstallString" Value="MsiExec.exe /X [ProductCode]" />\n'
         )
+        lines_new.append(
+            f'{indent}<RegistryValue Type="expandable" Name="QuietUninstallString" Value="MsiExec.exe /qn /X [ProductCode]" />\n'
+        )
 
-        major, minor, build = g_version.split(".")
+        vs = g_version.split(".")
+        major, minor, build = vs[0], vs[1], vs[2]
         lines_new.append(
             f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_version}" />\n'
         )
@@ -343,9 +349,11 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir):
             f'{indent}<RegistryValue Type="integer" Name="WindowsInstaller" Value="1" />\n'
         )
         for k, v in g_arpsystemcomponent.items():
-            if 'v' in v:
-                t = v['t'] if 't' in v is None else 'string'
-                lines_new.append(f'{indent}<RegistryValue Type="{t}" Name="{k}" Value="{v["v"]}" />\n')
+            if "v" in v:
+                t = v["t"] if "t" in v is None else "string"
+                lines_new.append(
+                    f'{indent}<RegistryValue Type="{t}" Name="{k}" Value="{v["v"]}" />\n'
+                )
 
         for i, line in enumerate(lines_new):
             lines.insert(index_start + i + 1, line)
@@ -359,7 +367,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir):
     )
 
 
-def gen_custom_ARPSYSTEMCOMPONENT(args, build_dir):
+def gen_custom_ARPSYSTEMCOMPONENT(args, dist_dir):
     try:
         custom_arp = json.loads(args.custom_arp)
         g_arpsystemcomponent.update(custom_arp)
@@ -368,7 +376,7 @@ def gen_custom_ARPSYSTEMCOMPONENT(args, build_dir):
         return False
 
     if args.arp:
-        return gen_custom_ARPSYSTEMCOMPONENT_True(args, build_dir)
+        return gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir)
     else:
         return gen_custom_ARPSYSTEMCOMPONENT_False(args)
 
@@ -387,39 +395,78 @@ def gen_content_between_tags(filename, tag_start, tag_end, func):
     return True
 
 
-def init_global_vars(args):
-    var_file = "../../src/version.rs"
-    if not Path(var_file).exists():
-        print(f"Error: {var_file} not found")
+def prepare_resources():
+    icon_src = Path(sys.argv[0]).parent.joinpath("../icon.ico")
+    icon_dst = Path(sys.argv[0]).parent.joinpath("Package/Resources/icon.ico")
+    if icon_src.exists():
+        icon_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(icon_src, icon_dst)
+        return True
+    else:
+        # unreachable
+        print(f"Error: icon.ico not found in {icon_src}")
         return False
 
-    with open(var_file, "r") as f:
-        content = f.readlines()
+
+def init_global_vars(dist_dir, app_name, args):
+    dist_app = dist_dir.joinpath(app_name + ".exe")
+
+    def read_process_output(args):
+        process = subprocess.Popen(
+            f"{dist_app} {args}",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            shell=True,
+        )
+        output, _ = process.communicate()
+        return output.decode("utf-8").strip()
 
     global g_version
     global g_build_date
     g_version = args.version.replace("-", ".")
     if g_version == "":
-        # pub const VERSION: &str = "1.2.4";
-        version_pattern = re.compile(r'.*VERSION: &str = "(.*)";.*')
-        for line in content:
-            match = version_pattern.match(line)
-            if match:
-                g_version = match.group(1)
-                break
-    if g_version == "":
-        print(f"Error: version not found in {var_file}")
+        g_version = read_process_output("--version")
+    version_pattern = re.compile(r"\d+\.\d+\.\d+.*")
+    if not version_pattern.match(g_version):
+        print(f"Error: version {g_version} not found in {dist_app}")
         return False
 
-    # pub const BUILD_DATE: &str = "2024-04-08 23:11";
-    build_date_pattern = re.compile(r'BUILD_DATE: &str = "(.*)";')
-    for line in content:
-        match = build_date_pattern.match(line)
-        if match:
-            g_build_date = match.group(1)
-            break
+    g_build_date = read_process_output("--build-date")
+    build_date_pattern = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+    if not build_date_pattern.match(g_build_date):
+        print(f"Error: build date {g_build_date} not found in {dist_app}")
+        return False
 
     return True
+
+
+def update_license_file(app_name):
+    if app_name == "RustDesk":
+        return
+    license_file = Path(sys.argv[0]).parent.joinpath("Package/License.rtf")
+    with open(license_file, "r") as f:
+        license_content = f.read()
+    license_content = license_content.replace("website rustdesk.com and other ", "")
+    license_content = license_content.replace("RustDesk", app_name)
+    license_content = re.sub("Purslane Ltd", app_name, license_content, flags=re.IGNORECASE)
+    with open(license_file, "w") as f:
+        f.write(license_content)
+
+
+def replace_component_guids_in_wxs():
+    langs_dir = Path(sys.argv[0]).parent.joinpath("Package")
+    for file_path in langs_dir.glob("**/*.wxs"):
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+
+        # <Component Id="Product.Registry.DefaultIcon" Guid="6DBF2690-0955-4C6A-940F-634DDA503F49">
+        for i, line in enumerate(lines):
+            match = re.search(r'Component.+Guid="([^"]+)"', line)
+            if match:
+                lines[i] = re.sub(r'Guid="[^"]+"', f'Guid="{uuid.uuid4()}"', line)
+
+        with open(file_path, "w") as f:
+            f.writelines(lines)
 
 
 if __name__ == "__main__":
@@ -427,29 +474,32 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     app_name = args.app_name
-    build_dir = (
-        f'../../flutter/build/windows/x64/runner/{"Debug" if args.debug else "Release"}'
-    )
-    if args.github_ci:
-        build_dir = "../../rustdesk"
-    build_dir = Path(sys.argv[0]).parent.joinpath(build_dir).resolve()
+    dist_dir = Path(sys.argv[0]).parent.joinpath(args.dist_dir).resolve()
 
-    if not init_global_vars(args):
+    if not prepare_resources():
         sys.exit(-1)
 
-    if not gen_pre_vars(args, build_dir):
+    if not init_global_vars(dist_dir, app_name, args):
         sys.exit(-1)
+
+    update_license_file(app_name)
+
+    if not gen_pre_vars(args, dist_dir):
+        sys.exit(-1)
+
+    if app_name != "RustDesk":
+        replace_component_guids_in_wxs()
 
     if not gen_upgrade_info():
         sys.exit(-1)
 
-    if not gen_custom_ARPSYSTEMCOMPONENT(args, build_dir):
+    if not gen_custom_ARPSYSTEMCOMPONENT(args, dist_dir):
         sys.exit(-1)
 
-    if not gen_auto_component(app_name, build_dir):
+    if not gen_auto_component(app_name, dist_dir):
         sys.exit(-1)
 
     if not gen_custom_dialog_bitmaps():
         sys.exit(-1)
 
-    replace_app_name_in_lans(args.app_name)
+    replace_app_name_in_langs(args.app_name)
