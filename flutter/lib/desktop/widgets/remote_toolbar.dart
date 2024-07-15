@@ -579,8 +579,8 @@ class _MobileActionMenu extends StatelessWidget {
     return Obx(() => _IconMenuButton(
           assetName: 'assets/actions_mobile.svg',
           tooltip: 'Mobile Actions',
-          onPressed: () =>
-              ffi.dialogManager.mobileActionsOverlayVisible.toggle(),
+          onPressed: () => ffi.dialogManager.setMobileActionsOverlayVisible(
+              !ffi.dialogManager.mobileActionsOverlayVisible.value),
           color: ffi.dialogManager.mobileActionsOverlayVisible.isTrue
               ? _ToolbarTheme.blueColor
               : _ToolbarTheme.inactiveColor,
@@ -1741,6 +1741,7 @@ class _KeyboardMenu extends StatelessWidget {
               viewMode(),
               Divider(),
               ...toolbarToggles(),
+              ...mobileActions(),
             ]);
   }
 
@@ -1877,6 +1878,39 @@ class _KeyboardMenu extends StatelessWidget {
         ffi: ffi,
         child: Text(translate('View Mode')));
   }
+
+  mobileActions() {
+    if (pi.platform != kPeerPlatformAndroid) return [];
+    final enabled = versionCmp(pi.version, '1.2.7') >= 0;
+    if (!enabled) return [];
+    return [
+      Divider(),
+      MenuButton(
+          child: Text(translate('Back')),
+          onPressed: () => ffi.inputModel.onMobileBack(),
+          ffi: ffi),
+      MenuButton(
+          child: Text(translate('Home')),
+          onPressed: () => ffi.inputModel.onMobileHome(),
+          ffi: ffi),
+      MenuButton(
+          child: Text(translate('Apps')),
+          onPressed: () => ffi.inputModel.onMobileApps(),
+          ffi: ffi),
+      MenuButton(
+          child: Text(translate('Volume up')),
+          onPressed: () => ffi.inputModel.onMobileVolumeUp(),
+          ffi: ffi),
+      MenuButton(
+          child: Text(translate('Volume down')),
+          onPressed: () => ffi.inputModel.onMobileVolumeDown(),
+          ffi: ffi),
+      MenuButton(
+          child: Text(translate('Power')),
+          onPressed: () => ffi.inputModel.onMobilePower(),
+          ffi: ffi),
+    ];
+  }
 }
 
 class _ChatMenu extends StatefulWidget {
@@ -1950,28 +1984,31 @@ class _VoiceCallMenu extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     menuChildrenGetter() {
-      final audioInput =
-          AudioInput(builder: (devices, currentDevice, setDevice) {
-        return Column(
-          children: devices
-              .map((d) => RdoMenuButton<String>(
-                    child: Container(
-                      child: Text(
-                        d,
-                        overflow: TextOverflow.ellipsis,
+      final audioInput = AudioInput(
+        builder: (devices, currentDevice, setDevice) {
+          return Column(
+            children: devices
+                .map((d) => RdoMenuButton<String>(
+                      child: Container(
+                        child: Text(
+                          d,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        constraints: BoxConstraints(maxWidth: 250),
                       ),
-                      constraints: BoxConstraints(maxWidth: 250),
-                    ),
-                    value: d,
-                    groupValue: currentDevice,
-                    onChanged: (v) {
-                      if (v != null) setDevice(v);
-                    },
-                    ffi: ffi,
-                  ))
-              .toList(),
-        );
-      });
+                      value: d,
+                      groupValue: currentDevice,
+                      onChanged: (v) {
+                        if (v != null) setDevice(v);
+                      },
+                      ffi: ffi,
+                    ))
+                .toList(),
+          );
+        },
+        isCm: false,
+        isVoiceCall: true,
+      );
       return [
         audioInput,
         Divider(),
